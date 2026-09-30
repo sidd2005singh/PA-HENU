@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HENU PA Classical 3D Environment</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      user-select: none;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000000;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+
+    #canvas-container {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+    }
+
+    /* Screen Border Glow / Edge Halo Effect */
+    .screen-border-glow {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 2;
+      box-shadow: inset 0 0 45px rgba(147, 51, 234, 0.25), inset 0 0 90px rgba(126, 34, 206, 0.12);
+    }
+
+    /* Bottom Center Branding Logo */
+    #brand-overlay {
+      position: absolute;
+      bottom: 4vh;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      transition: all 0.4s ease;
+    }
+
+    #brand-logo-img {
+      height: 52px;
+      max-width: 330px;
+      object-fit: contain;
+      filter: drop-shadow(0 0 8px rgba(168, 85, 247, 0.8)) drop-shadow(0 0 18px rgba(147, 51, 234, 0.4));
+      animation: brandFloat 4s ease-in-out infinite alternate;
+      transition: filter 0.4s ease, transform 0.4s ease;
+    }
+
+    @keyframes brandFloat {
+      0% {
+        transform: translateY(0px) scale(1);
+        filter: drop-shadow(0 0 6px rgba(168, 85, 247, 0.7)) drop-shadow(0 0 14px rgba(147, 51, 234, 0.35));
+      }
+      100% {
+        transform: translateY(-3px) scale(1.01);
+        filter: drop-shadow(0 0 10px rgba(192, 132, 252, 0.85)) drop-shadow(0 0 22px rgba(147, 51, 234, 0.5));
+      }
+    }
+  </style>
+
+  <!-- Local Offline Three.js UMD Scripts -->
+  <script src="three.min.js"></script>
+  <script src="GLTFLoader.js"></script>
+  <script src="OrbitControls.js"></script>
+</head>
+
+<body>
+  <div id="canvas-container"></div>
+  <div class="screen-border-glow"></div>
+
+  <!-- Bottom Brand Element: HENU_PA_LIGHT.png -->
+  <div id="brand-overlay">
+    <img id="brand-logo-img" src="HENU_PA_LIGHT.png" onerror="if(this.src.indexOf('HENU_PA_DARK.png')===-1){this.src='HENU_PA_DARK.png';}else if(this.src.indexOf('../')===-1){this.src='../HENU_PA_LIGHT.png';}" alt="HENU PA" />
+  </div>
+
+  <script>
+    // ——— GLOBAL STATE & PALETTES ———
+    let currentState = "IDLE";
+    let liveAudioAmp = 0;
+    let dispAudioAmp = 0;
+    let reactorSpeedMultiplier = 1.0;
+
+    const STATE_GLOWS = {
+      IDLE:      "rgba(168, 85, 247, 0.8)",
+      ONLINE:    "rgba(168, 85, 247, 0.8)",
+      LISTENING: "rgba(6, 182, 212, 0.85)",
+      SPEAKING:  "rgba(250, 204, 21, 0.85)",
+      THINKING:  "rgba(251, 146, 60, 0.85)",
+      EXECUTING: "rgba(240, 171, 252, 0.9)",
+      WORKING:   "rgba(240, 171, 252, 0.9)",
+      MUTED:     "rgba(239, 68, 68, 0.7)",
+      SCANNING:  "rgba(74, 222, 128, 0.85)"
+    };
+
+    // Setup Wizard & External Control Hooks
+    window.setAudioLevel = function (lvl) {
+      const v = Math.max(0, Math.min(1, Number(lvl) || 0));
+      if (v > liveAudioAmp) liveAudioAmp = v;
+    };
+
+    window.setHenuState = function (state) {
+      if (!state) return;
+      currentState = String(state).toUpperCase();
+      const glow = STATE_GLOWS[currentState] || STATE_GLOWS.IDLE;
+      
+      const brandLogo = document.getElementById("brand-logo-img");
+      if (brandLogo) {
+        brandLogo.style.filter = `drop-shadow(0 0 8px ${glow}) drop-shadow(0 0 20px ${glow})`;
+      }
+
+      const borderGlow = document.querySelector(".screen-border-glow");
+      if (borderGlow) {
+        borderGlow.style.boxShadow = `inset 0 0 45px ${glow.replace(/[\d\.]+\)$/, '0.25)')}, inset 0 0 90px ${glow.replace(/[\d\.]+\)$/, '0.12)')}`;
+      }
+    };
+    window.setBrahmaState = window.setHenuState;
+
+    window.accelerateReactor = function () {
+      reactorSpeedMultiplier = 3.5;
+      setTimeout(() => { reactorSpeedMultiplier = 1.0; }, 2500);
+    };
+
+    window.triggerPulse = function () {
+      liveAudioAmp = 1.0;
+    };
+
+    window.losePower = function () {
+      reactorSpeedMultiplier = 0.2;
+      setTimeout(() => { reactorSpeedMultiplier = 1.0; }, 2000);
+    };
+
+    window.setReactorSpeed = function (speed) {
+      reactorSpeedMultiplier = Math.max(0.1, Number(speed) || 1.0);
+    };
+
+    window.dissolveReactor = function () {
+      liveAudioAmp = 1.5;
+    };
+
+    // ——— SCENE & CANVAS SETUP (Classical Clean 3D) ———
+    const container = document.getElementById("canvas-container");
+    const width = Math.max(1, container.clientWidth || window.innerWidth);
+    const height = Math.max(1, container.clientHeight || window.innerHeight);
+
+    const scene = new THREE.Scene();
+
+    const camera = new THREE.PerspectiveCamera(38, width / height, 0.1, 1000);
+    camera.position.set(0, 0.0, 9.2);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.0));
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    container.appendChild(renderer.domElement);
+
+    // ——— PURE CLASSICAL 3D LIGHTING (Natural, crisp & clean) ———
+    const ambientLight = new THREE.AmbientLight(0xffffff, 1.3);
+    scene.add(ambientLight);
+
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
+    keyLight.position.set(2, 4, 8);
+    scene.add(keyLight);
+
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.6);
+    fillLight.position.set(-4, -1, 4);
+    scene.add(fillLight);
+
+    // ——— 3D MODEL LOADERS & ANCHORS ———
+    const gltfLoader = new THREE.GLTFLoader();
+
+    // 1. Center: MAIN_HENU_OS_logo_3D.glb
+    const logoAnchor = new THREE.Group();
+    logoAnchor.position.set(0, 0.45, 0);
+    scene.add(logoAnchor);
+    let logoMesh = null;
+    let logoBaseScale = 1.0;
+
+    // 2. Right Bottom Corner: sardu_CHAENU.glb
+    const characterAnchor = new THREE.Group();
+    scene.add(characterAnchor);
+    let characterMesh = null;
+    let characterBaseScale = 1.0;
+
+    const logoPaths = [
+      "MAIN_HENU_OS_logo_3D.glb",
+      "../3D_models/MAIN_HENU_OS_logo_3D.glb",
+      "assets/3D_models/MAIN_HENU_OS_logo_3D.glb"
+    ];
+
+    const characterPaths = [
+      "sardu_CHAENU.glb",
+      "../3D_models/sardu_CHAENU.glb",
+      "assets/3D_models/sardu_CHAENU.glb"
+    ];
+
+    function tryLoadGLTF(paths, index, onSuccess) {
+      if (index >= paths.length) {
+        console.warn("Could not load GLB from provided paths:", paths);
+        return;
+      }
+      gltfLoader.load(
+        paths[index],
+        (gltf) => {
+          onSuccess(gltf);
+        },
+        undefined,
+        (err) => {
+          tryLoadGLTF(paths, index + 1, onSuccess);
+        }
+      );
+    }
+
+    // Load Center Eye Model (Classical Clean 3D)
+    tryLoadGLTF(logoPaths, 0, (gltf) => {
+      logoMesh = gltf.scene;
+      
+      const box = new THREE.Box3().setFromObject(logoMesh);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      
+      logoMesh.position.sub(center);
+      
+      const maxDim = Math.max(size.x, size.y, size.z);
+      if (maxDim > 0) {
+        logoBaseScale = 4.3 / maxDim;
+        logoMesh.scale.setScalar(logoBaseScale);
+      }
+
+      // NO GLOW ON GLB: Pure clean natural materials
+      logoMesh.traverse((child) => {
+        if (child.isMesh && child.material) {
+          child.material.roughness = 0.4;
+          child.material.metalness = 0.15;
+          if (child.material.emissive) {
+            child.material.emissive.set(0x000000);
+          }
+          if (child.material.map) {
+            child.material.map.encoding = THREE.sRGBEncoding;
+          }
+        }
+      });
+
+      logoAnchor.add(logoMesh);
+      console.log("HENU Eye Logo 3D Loaded Cleanly!");
+    });
+
+    // Load Character (Sardu & Chaenu) - Snug in Right Bottom Corner, No Clipping
+    tryLoadGLTF(characterPaths, 0, (gltf) => {
+      characterMesh = gltf.scene;
+      
+      const box = new THREE.Box3().setFromObject(characterMesh);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+
+      // Center horizontally and align feet to bottom
+      characterMesh.position.x = -center.x;
+      characterMesh.position.y = -box.min.y; 
+      characterMesh.position.z = -center.z;
+
+      const charHeight = size.y || 1;
+      // Sized to fit comfortably in bottom right without cutting off dragon wing or arms
+      characterBaseScale = 2.85 / charHeight;
+      characterMesh.scale.setScalar(characterBaseScale);
+
+      // Facing slightly inward
+      characterAnchor.rotation.y = -0.12;
+
+      // NO GLOW ON GLB: Pure clean natural textures
+      characterMesh.traverse((child) => {
+        if (child.isMesh && child.material) {
+          child.material.roughness = 0.5;
+          child.material.metalness = 0.1;
+          if (child.material.emissive) {
+            child.material.emissive.set(0x000000);
+          }
+          if (child.material.map) {
+            child.material.map.encoding = THREE.sRGBEncoding;
+          }
+        }
+      });
+
+      characterAnchor.add(characterMesh);
+      updatePositions();
+      console.log("Sardu & Chaenu Loaded Cleanly without Clipping!");
+    });
+
+    // ——— CURSOR GAZE & INTERACTION TRACKING ———
+    let mouseNormX = 0, mouseNormY = 0;
+    let targetTiltX = 0, targetTiltY = 0;
+
+    window.addEventListener("pointermove", (e) => {
+      mouseNormX = (e.clientX / Math.max(1, window.innerWidth)) * 2 - 1;
+      mouseNormY = -(e.clientY / Math.max(1, window.innerHeight)) * 2 + 1;
+      
+      targetTiltX = -mouseNormY * 0.16;
+      targetTiltY = mouseNormX * 0.24;
+    });
+
+    // Dynamic Frustum Calculation to ensure zero clipping on right/bottom edge
+    function updatePositions() {
+      const w = Math.max(1, window.innerWidth);
+      const h = Math.max(1, window.innerHeight);
+      const aspect = w / h;
+
+      camera.aspect = aspect;
+      camera.updateProjectionMatrix();
+
+      renderer.setSize(w, h);
+
+      const vFOV = (camera.fov * Math.PI) / 180;
+      const visibleHeight = 2 * Math.tan(vFOV / 2) * camera.position.z;
+      const visibleWidth = visibleHeight * aspect;
+
+      const rightEdge = visibleWidth / 2;
+      const bottomEdge = -visibleHeight / 2;
+
+      // Position character with safe margins so right hand / dragon wings are fully visible
+      if (aspect < 1.25) {
+        characterAnchor.position.set(rightEdge - 1.25, bottomEdge + 0.05, 0.1);
+        characterAnchor.scale.setScalar(0.85);
+        logoAnchor.position.set(0, 0.65, 0);
+        logoAnchor.scale.setScalar(0.92);
+      } else {
+        // Desktop widescreen: inset by 1.85 units from right edge to prevent wing cutting
+        characterAnchor.position.set(rightEdge - 1.85, bottomEdge + 0.08, 0.1);
+        characterAnchor.scale.setScalar(1.0);
+        logoAnchor.position.set(0, 0.45, 0);
+        logoAnchor.scale.setScalar(1.0);
+      }
+    }
+    window.addEventListener("resize", updatePositions);
+    updatePositions();
+
+    // ——— ANIMATION & RENDER LOOP ———
+    const clock = new THREE.Clock();
+    let currentTiltX = 0, currentTiltY = 0;
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const t = clock.getElapsedTime();
+
+      liveAudioAmp *= 0.88;
+      dispAudioAmp += (liveAudioAmp - dispAudioAmp) * 0.35;
+
+      // Sentient Gaze Smoothing
+      currentTiltX += (targetTiltX - currentTiltX) * 0.045;
+      currentTiltY += (targetTiltY - currentTiltY) * 0.045;
+
+      // Center Eye Model Motion
+      if (logoAnchor) {
+        const floatY = Math.sin(t * 1.5 * reactorSpeedMultiplier) * 0.035;
+        const pulseScale = 1.0 + dispAudioAmp * 0.06 + Math.sin(t * 2.2) * 0.006;
+        
+        logoAnchor.position.y = (aspectRatioFactor() > 1.25 ? 0.45 : 0.65) + floatY;
+        logoAnchor.rotation.x = currentTiltX + Math.sin(t * 0.6) * 0.012;
+        logoAnchor.rotation.y = currentTiltY + (Math.sin(t * 0.3) * 0.02);
+        logoAnchor.rotation.z = Math.sin(t * 0.8) * 0.008;
+        
+        if (logoMesh) {
+          logoMesh.scale.setScalar(logoBaseScale * pulseScale);
+        }
+      }
+
+      // Right Bottom Character Companion Motion
+      if (characterAnchor) {
+        const charFloatY = Math.sin(t * 1.2 + 1.0) * 0.012;
+        const charBreathScale = 1.0 + Math.sin(t * 1.6) * 0.005 + dispAudioAmp * 0.01;
+        
+        const vFOV = (camera.fov * Math.PI) / 180;
+        const bottomEdge = -(2 * Math.tan(vFOV / 2) * camera.position.z) / 2;
+        characterAnchor.position.y = bottomEdge + 0.08 + charFloatY;
+        
+        characterAnchor.rotation.y = -0.12 + currentTiltY * 0.12;
+        characterAnchor.rotation.x = currentTiltX * 0.06;
+
+        if (characterMesh) {
+          characterMesh.scale.setScalar(characterBaseScale * charBreathScale);
+        }
+      }
+
+      // Render Clean Scene
+      renderer.render(scene, camera);
+    }
+
+    function aspectRatioFactor() {
+      return (window.innerWidth || 1) / Math.max(1, window.innerHeight || 1);
+    }
+
+    animate();
+  </script>
+</body>
+
+</html>
